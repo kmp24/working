@@ -1,0 +1,211 @@
+---
+title: "PerhamLab7"
+author: "K Perham"
+date: "November 9, 2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE}
+library(ggplot2)
+library(sf)
+library(spdep)
+library(RColorBrewer)
+library(ggplot2)
+```
+
+### Read the point shapefile into R and plot the nickel data using ggplot or tmap. Based on this plot describe the general spatial pattern in nickel. 
+
+### 'Ni' values seem to roughly peak in what looks like a diagonal trough in the middle of the plot. It appears the sampling locations might be dependent on the topography of the study area since the points do not seems evenly distributed. You can see what looks like contour lines in the the plot.
+```{r}
+nickel<-st_read('D:/SIE512/lab7/Nickel.shp')
+ggplot()+  
+geom_point(data=nickel,aes(x=X,y=Y,col=Ni))+ scale_colour_gradient(low="blue",high="red") 
+```
+
+```{r, message=FALSE}
+sample_size = floor(0.80*nrow(nickel)) # creates a value for dividing the data into two sets. In this case the value is defined as 80% of the number of rows in the dataset
+
+sample_size #shows the value of the sample size
+
+set.seed(1234) # set the seed to make the partition reproducible
+# randomly select the sample using the sample function
+picked = sample(seq_len(nrow(nickel)),size = sample_size)
+niTest = nickel[picked,] # the test data set
+niVal = nickel[-picked,] # the validation data set
+
+###
+#hist(niTest)
+```
+
+```{r}
+# Merge the two df's
+Type=rep(0,nrow(niVal)) #creates zeros for the validation set
+NiV1=(cbind(niVal,Type))
+Type=rep(1,nrow(niTest)) #creates ones for the test data set
+NiT1=cbind(niTest,Type)
+CombNi=rbind(NiT1,NiV1)
+CombNi
+```
+
+```{r}
+ggplot(CombNi, aes(x=factor(Type), Ni))+geom_boxplot(col="gray", fill="lightblue") + stat_summary(fun=mean,shape=15,col='red', size= 2.5,geom='point')+xlab("Valdiation versus Test Samples")
+ggplot(CombNi, aes(Ni))+geom_histogram(bins=8,col="gray", fill="lightblue")+facet_wrap(~Type)
+```
+
+```{r}
+library(gstat)
+
+Ni.var1<-variogram(Ni ~1, data=niTest)
+plot(Ni.var1, pch=15)
+```
+
+```{r}
+### Estimated variograms
+NiSph.fit<-fit.variogram(Ni.var1, vgm(800, "Sph", 20000, 200))
+NiExp.fit<-fit.variogram(Ni.var1, vgm(800, "Exp", 20000, 200))
+NiCir.fit<-fit.variogram(Ni.var1, vgm(800, "Cir", 20000, 200))
+
+plot(Ni.var1, pch=16,NiSph.fit)
+plot(Ni.var1, pch=16,NiExp.fit)
+plot(Ni.var1, pch=16,NiCir.fit)
+
+attr(NiSph.fit, "SSErr")
+attr(NiExp.fit, "SSErr") #better fit
+attr(NiCir.fit, "SSErr")
+```
+
+```{r}
+summary(NiExp.fit)
+summary(NiSph.fit)
+```
+
+```{r}
+### Ordinary Kriging
+geosp=as_Spatial(nickel)
+pred.grid<-spsample(geosp, 1000, type="regular")
+plot(pred.grid)
+
+nisp=as_Spatial(niTest)
+
+set.seed(131)
+sph.k <- krige(formula = Ni~1, locations=nisp, model = NiSph.fit, 
+          newdata = pred.grid, nmax = 15) 
+exp.k <- krige(formula = Ni~1, locations=nisp, model = NiExp.fit, 
+          newdata = pred.grid, nmax = 15) 
+summary(sph.k)
+summary(exp.k)
+```
+### The spherical and exponential models seem to show alignment for the fitted values. The models seem similar based on the summary. The kriging variances in the plots below show a similar smoothness. The prediction seems satisfactory, the high values predicted in the plots align with the existing values.
+
+```{r}
+rng = range(c(sph.k$var1.pred, exp.k$var1.pred))
+###
+sph.k %>% as.data.frame %>%
+  ggplot(aes(x=x1, y=x2)) + geom_tile(aes(fill=var1.pred)) + coord_equal() +
+  scale_fill_gradient(low = "lightblue", high="red",limits=c(floor(rng[1]), ceiling(rng[2]))) +
+ theme_bw()
+
+exp.k %>% as.data.frame %>%
+  ggplot(aes(x=x1, y=x2)) + geom_tile(aes(fill=var1.pred)) + coord_equal() +
+  scale_fill_gradient(low = "lightblue", high="red",limits=c(floor(rng[1]), ceiling(rng[2]))) +
+ theme_bw()
+
+```
+
+
+```{r}
+rng = range(c(sph.k$var1.var, exp.k$var1.var))
+sph.k %>% as.data.frame %>%
+  ggplot(aes(x=x1, y=x2)) + geom_tile(aes(fill=var1.var)) + coord_equal() +
+  scale_fill_gradient(low = "white", high="blue",limits=c(floor(rng[1]), ceiling(rng[2]))) +
+ theme_bw()
+
+exp.k %>% as.data.frame %>%
+  ggplot(aes(x=x1, y=x2)) + geom_tile(aes(fill=var1.var)) + coord_equal() +
+  scale_fill_gradient(low = "white", high="blue",limits=c(floor(rng[1]), ceiling(rng[2]))) +
+ theme_bw()
+```
+###Compare the kriged predictions and kriging variance for both models. Describe how they compare and if the prediction seems satisfactory.
+```{r}
+###
+niSph.val<-krige(Ni ~1, locations=nisp, newdata= niVal, model=NiSph.fit)
+niExp.val<-krige(Ni ~1, locations=nisp, newdata= niVal, model=NiExp.fit)
+
+summary(niSph.val)
+summary(niExp.val)
+```
+```{r}
+diffSph<- niVal$Ni-niSph.val$var1.pred # observed nickel - predicted nickel
+diffExp<- niVal$Ni-niExp.val$var1.pred
+
+summary(diffSph)
+summary(diffExp)
+```
+```{r}
+rmseSph<-sqrt(sum(diffSph^2)/length(diffSph))
+MESph<-sum(diffSph/length(diffSph))
+rmseExp<-sqrt(sum(diffExp^2)/length(diffExp))
+MEExp<-sum(diffExp/length(diffExp))
+
+Error<-c('Spherical','Exponential')
+RMSE<-c(rmseSph,rmseExp)
+ME<-c(MESph,MEExp)
+table<-rbind(Error,RMSE,ME)
+
+table
+```
+
+# Observed values versus predicted values
+```{r}
+niSph.cv<-krige.cv(Ni~1, nisp, model=NiSph.fit, nfold=nrow(nisp))
+niExp.cv<-krige.cv(Ni~1, nisp, model=NiExp.fit, nfold=nrow(nisp))
+
+
+summary(niSph.cv)
+summary(niExp.cv)
+```
+
+```{r}
+#mean error 
+sphcvmean=mean(niSph.cv$residual)
+expcvmean=mean(niExp.cv$residual)
+
+#RMSE, ideally small
+sphcvrmse<-sqrt(mean(niSph.cv $residual^2))
+expcvrmse<-sqrt(mean(niExp.cv $residual^2))
+
+#ratio of kriging variance to cross-validation residual
+sphcvmsdr=mean((niSph.cv$residual^2)/ (niSph.cv$var1.var))
+expcvmsdr=mean((niExp.cv$residual^2)/ (niExp.cv$var1.var))
+
+
+CVMEAN<-c(sphcvmean,expcvmean)
+RMSE2<-c(sphcvrmse,expcvrmse)
+MSDR<-c(sphcvmsdr,expcvmsdr)
+table2<-rbind(Error,CVMEAN,RMSE2,MSDR)
+
+table2
+```
+
+### The spherical model performed better than the exponential when the sample dataset was larger (80% of the data vs 75% for example). With less data in the test set, the exponential model performed better.However, the initial sum of squared error showed that the exponential model had a better fit based on the estimated variogram parameters. After testing the models on the remaining validation set, the spherical model better predicted the remaining values.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
